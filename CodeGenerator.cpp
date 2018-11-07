@@ -238,6 +238,29 @@ void CodeGenerator::InsertArg(const DefaultStmt* stmt)
 }
 //-----------------------------------------------------------------------------
 
+void CodeGenerator::InsertArg(const ContinueStmt* /*stmt*/)
+{
+    mOutputFormatHelper.Append("continue");
+}
+//-----------------------------------------------------------------------------
+
+void CodeGenerator::InsertArg(const GotoStmt* stmt)
+{
+    mOutputFormatHelper.Append("goto ");
+    InsertArg(stmt->getLabel());
+}
+//-----------------------------------------------------------------------------
+
+void CodeGenerator::InsertArg(const LabelStmt* stmt)
+{
+    mOutputFormatHelper.AppendNewLine(stmt->getName(), ":");
+
+    if(stmt->getSubStmt()) {
+        InsertArg(stmt->getSubStmt());
+    }
+}
+//-----------------------------------------------------------------------------
+
 void CodeGenerator::InsertArg(const SwitchStmt* stmt)
 {
     const bool hasInit{stmt->getInit() || stmt->getConditionVariable()};
@@ -461,6 +484,8 @@ static const DeclRefExpr* FindDeclRef(const Stmt* stmt)
         if(const auto* arrayDeclRefExpr = dyn_cast_or_null<DeclRefExpr>(srcExpr)) {
             return arrayDeclRefExpr;
         }
+    } else if(const auto func = dyn_cast_or_null<CXXFunctionalCastExpr>(stmt)) {
+        //        TODO(stmt, "");
     }
 
     if(stmt) {
@@ -477,9 +502,8 @@ static const DeclRefExpr* FindDeclRef(const Stmt* stmt)
 
 void CodeGenerator::InsertArg(const DecompositionDecl* decompositionDeclStmt)
 {
-    const auto* declName = FindDeclRef(decompositionDeclStmt->getInit());
-    const auto  baseVarName{[&]() {
-        if(declName) {
+    const auto baseVarName{[&]() {
+        if(const auto* declName = FindDeclRef(decompositionDeclStmt->getInit())) {
             std::string name = GetPlainName(*declName);
 
             const std::string operatorName{"operator"};
@@ -490,17 +514,12 @@ void CodeGenerator::InsertArg(const DecompositionDecl* decompositionDeclStmt)
             return name;
         }
 
-        Error(decompositionDeclStmt, "unknown decl\n");
+        // We approached an unnamed decl. This happens for example like this: auto& [x, y] = Point{};
         return std::string{""};
     }()};
 
-    const std::string tmpVarName = [&]() {
-        if(declName && declName->getDecl()) {
-            return BuildInternalVarName(baseVarName, GetBeginLoc(decompositionDeclStmt), GetSM(*declName->getDecl()));
-        }
-
-        return BuildInternalVarName(baseVarName);
-    }();
+    const std::string tmpVarName{
+        BuildInternalVarName(baseVarName, GetBeginLoc(decompositionDeclStmt), GetSM(*decompositionDeclStmt))};
 
     mOutputFormatHelper.Append(GetTypeNameAsParameter(decompositionDeclStmt->getType(), tmpVarName), " = ");
 
@@ -1234,9 +1253,14 @@ void CodeGenerator::InsertArg(const CharacterLiteral* stmt)
                 value &= 0xFFu;
             }
 
-            if(value < 256 && isPrintable(static_cast<unsigned char>(value))) {
-                const std::string v{static_cast<char>(value)};
-                mOutputFormatHelper.Append("'", v, "'");
+            if(value < 256) {
+                if(isPrintable(static_cast<unsigned char>(value))) {
+                    const std::string v{static_cast<char>(value)};
+                    mOutputFormatHelper.Append("'", v, "'");
+                } else {
+                    const std::string v{std::to_string(static_cast<unsigned char>(value))};
+                    mOutputFormatHelper.Append(v);
+                }
             }
     }
 }
@@ -1244,7 +1268,18 @@ void CodeGenerator::InsertArg(const CharacterLiteral* stmt)
 
 void CodeGenerator::InsertArg(const PredefinedExpr* stmt)
 {
-    InsertArg(stmt->getFunctionName());
+    // Check if getFunctionName returns a valid StringLiteral. It does return a nullptr, if this PredefinedExpr is in a
+    // UnresolvedLookupExpr. In that case, print the identifier, e.g. __func__.
+    if(const auto* functionName = stmt->getFunctionName()) {
+        InsertArg(functionName);
+    } else {
+#if IS_CLANG_NEWER_THAN(7)
+        const auto name = PredefinedExpr::getIdentKindName(stmt->getIdentKind());
+#else
+        const auto name = PredefinedExpr::getIdentTypeName(stmt->getIdentType());
+#endif
+        mOutputFormatHelper.Append(name.str());
+    }
 }
 //-----------------------------------------------------------------------------
 
@@ -1297,6 +1332,10 @@ static const char* getValueOfValueInit(const QualType& t)
             }
 
             break;
+
+#if IS_CLANG_NEWER_THAN(7)
+        case Type::STK_FixedPoint: Error("STK_FixedPoint is not implemented"); break;
+#endif
     }
 
     return "0";
@@ -1473,7 +1512,7 @@ void CodeGenerator::InsertArg(const EnumConstantDecl* stmt)
 
 void CodeGenerator::InsertArg(const FieldDecl* stmt)
 {
-    mOutputFormatHelper.AppendNewLine(GetName(stmt->getType()), " ", GetName(*stmt), ";");
+    mOutputFormatHelper.AppendNewLine(GetTypeNameAsParameter(stmt->getType(), GetName(*stmt)), ";");
 }
 //-----------------------------------------------------------------------------
 
@@ -1796,6 +1835,12 @@ void CodeGenerator::InsertArg(const CXXStdInitializerListExpr* stmt)
 void CodeGenerator::InsertArg(const CXXNullPtrLiteralExpr* /*stmt*/)
 {
     mOutputFormatHelper.Append("nullptr");
+}
+//-----------------------------------------------------------------------------
+
+void CodeGenerator::InsertArg(const LabelDecl* stmt)
+{
+    mOutputFormatHelper.Append(stmt->getNameAsString());
 }
 //-----------------------------------------------------------------------------
 
